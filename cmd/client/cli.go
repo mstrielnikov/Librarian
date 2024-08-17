@@ -34,8 +34,6 @@ var UploadMinioCmd = &cobra.Command{
 			log.Fatalf(fmt.Sprintf(`only accepts 5 arguments, got %d`, len(args)))
 		}
 
-		minioClient := NewMinioClient(minioEndpoint, minioAccessKeyID, minioSecretAccessKey, minioUseSSL)
-
 		bucket, err := cli.Flags().GetString("bucket")
 		if err != nil {
 			log.Fatalf(fmt.Sprintf("bucket is not defined: %v", err))
@@ -46,6 +44,7 @@ var UploadMinioCmd = &cobra.Command{
 			log.Fatalf(fmt.Sprintf("error reading filename %s: %v", filename, err))
 		}
 
+		minioClient := NewMinioClient(minioEndpoint, minioAccessKeyID, minioSecretAccessKey, minioUseSSL)
 		minioClient.UploadFile(bucket, filename)
 	},
 }
