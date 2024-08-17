@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/spf13/cobra"
 	"log"
 	"os"
 )
 
-var Env = Environment{
+var Env = client.Environment{
 	configFilePath:              ".env",
 	configExtension:             ".env",
 	allowConfigFileNonExistanse: true,
@@ -17,26 +18,22 @@ var Env = Environment{
 
 var (
 	// Set defaults from environment variables if available
-	minioEndpoint        = Env.GetEnv("MINIO_ENDPOINT", "").asString()
-	minioAccessKeyID     = Env.GetEnv("MINIO_ACCESS_KEY", "").asString()
-	minioSecretAccessKey = Env.GetEnv("MINIO_SECRET_KEY", "").asString()
-	minioBucketName      = Env.GetEnv("MINIO_BUCKET", "").asString()
-	minioUseSSL          = Env.GetEnv("MINIO_USE_SSL", "").asBool()
+	elasticEndpoint = Env.GetEnv("ELASTIC_ENDPOINT", "").asString()
 )
 
 // UploadMinioCmd represents the base command when called without any subcommands
 var UploadMinioCmd = &cobra.Command{
-	Use:   "client <bucket> <key> <file>",
-	Short: "Command to upload documents to minio",
-	Long:  `Upload documents to minio by providing file name to a bucket`,
+	Use:   "ocr <endpoint> <filename>",
+	Short: "Command recognise and upload to elasticsearch",
+	Long:  `Recognise and upload to elasticsearch by providing elasticsearch endpoint and filename`,
 	Run: func(cli *cobra.Command, args []string) {
-		if len(args) != 6 {
-			log.Fatalf(fmt.Sprintf(`only accepts 5 arguments, got %d`, len(args)))
+		if len(args) != 2 {
+			log.Fatalf(fmt.Sprintf(`only accepts 2 arguments, got %d`, len(args)))
 		}
 
-		bucket, err := cli.Flags().GetString("bucket")
+		endpoint, err := cli.Flags().GetString("endpoint")
 		if err != nil {
-			log.Fatalf(fmt.Sprintf("bucket is not defined: %v", err))
+			log.Fatalf(fmt.Sprintf("endpoint is not defined: %v", err))
 		}
 
 		filename, err := cli.Flags().GetString("filename")
@@ -44,16 +41,29 @@ var UploadMinioCmd = &cobra.Command{
 			log.Fatalf(fmt.Sprintf("error reading filename %s: %v", filename, err))
 		}
 
-		minioClient := NewMinioClient(minioEndpoint, minioAccessKeyID, minioSecretAccessKey, minioUseSSL)
-		minioClient.UploadFile(bucket, filename)
+		pdfData := OCRExtractText(filename)
+
+		// Initialize Elasticsearch client
+		es, err := elasticsearch.NewDefaultClient()
+		if err != nil {
+			log.Fatalf("Error creating Elasticsearch client: %v", err)
+		}
+
+		// Send the PDF data to Elasticsearch
+		err = ElasticPDFUpload(pdfData, es)
+		if err != nil {
+			log.Fatalf("Error sending PDF to Elasticsearch: %v", err)
+		}
+
+		fmt.Printf("PDF successfully created at %s and sent to Elasticsearch\n", filename)
 	},
 }
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "client",
-	Short: "User client to upload documents",
-	Long:  `User CLI client to upload documents in minio storage or any S3 compatible one for further processing`,
+	Use:   "ocr",
+	Short: "OCR tool for PDF files with pages as scans",
+	Long:  `OCR service to recognise PDF files with pages as scans and then save as a valid PDF with uploading to elastic search`,
 	// Run: func(cli *cobra.Command, args []string) { },
 }
 
@@ -83,10 +93,6 @@ func init() {
 	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	rootCmd.AddCommand(UploadMinioCmd)
 
-	UploadMinioCmd.Flags().StringVar(&minioEndpoint, "endpoint", minioEndpoint, "MinIO endpoint")
-	UploadMinioCmd.Flags().StringVar(&minioAccessKeyID, "accessKey", minioAccessKeyID, "Access key ID")
-	UploadMinioCmd.Flags().StringVar(&minioSecretAccessKey, "secretKey", minioSecretAccessKey, "Secret access key")
-	UploadMinioCmd.Flags().BoolVar(&minioUseSSL, "ssl", minioUseSSL, "Use SSL")
-	UploadMinioCmd.Flags().StringVar(&minioBucketName, "bucket", minioBucketName, "Bucket name")
+	UploadMinioCmd.Flags().StringVar(&elasticEndpoint, "endpoint", minioBucketName, "ElasticSearch endpoint")
 	UploadMinioCmd.Flags().String("filename", "", "Filename to upload")
 }

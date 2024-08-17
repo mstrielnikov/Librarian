@@ -2,16 +2,16 @@
 CXX = g++
 
 # Compiler flags
-CXXFLAGS = -Wall -std=c++11
+CXXFLAGS = -Wall -std=c++11 -fPIC
 
 # Libraries
-LIBS = -ltesseract -llept -lhpdf -lcurl
+LIBS = -ltesseract -llept
 
-# Output binary name
-TARGET = ocr_to_pdf
+# Output library name
+TARGET = libocr.so
 
 # Source files
-SRCS = ocr_to_pdf.cpp
+SRCS = ocr_lib.cpp
 
 # Object files
 OBJS = $(SRCS:.cpp=.o)
@@ -19,21 +19,17 @@ OBJS = $(SRCS:.cpp=.o)
 # Default target
 all: $(TARGET)
 
-# Link object files to create the binary
+# Link object files to create the shared library
 $(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
+    $(CXX) $(CXXFLAGS) -shared -o $(TARGET) $(OBJS) $(LIBS)
 
 # Compile source files to object files
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+    $(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Clean up build artifacts
 clean:
-	rm -f $(OBJS) $(TARGET)
-
-# Run the program
-run: $(TARGET)
-	./$(TARGET) input_image.png output.pdf http://localhost:9200/pdfs/_doc/1
+    rm -f $(OBJS) $(TARGET)
 
 # PHONY targets
-.PHONY: all clean run
+.PHONY: all clean
