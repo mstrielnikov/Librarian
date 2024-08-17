@@ -1,4 +1,4 @@
-package minio
+package main
 
 import (
 	"context"
@@ -6,33 +6,32 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"log"
+	"os"
 	"path/filepath"
 )
 
 type MinioClient struct {
-	MinioClient *minio.Client
-	minioConfig *MinioConfig
+	minioClient *minio.Client
 }
 
 // NewMinioClient to initialize MinIO client
-func NewMinioClient(minioConfig *MinioConfig) *MinioClient {
-	minioClient, err := minio.New(minioConfig.endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(minioConfig.accessKeyID, minioConfig.secretAccessKey, ""),
-		Secure: minioConfig.useSSL,
+func NewMinioClient(minioEndpoint, minioAccessKeyID, minioSecretAccessKey string, minioUseSSL bool) *MinioClient {
+	minioClient, err := minio.New(minioEndpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(minioAccessKeyID, minioSecretAccessKey, ""),
+		Secure: minioUseSSL,
 	})
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	return &MinioClient{
-		MinioClient: minioClient,
-		minioConfig: minioConfig,
+		minioClient: minioClient,
 	}
 }
 
 // CreateBucket to create bucket
 func (m *MinioClient) CreateBucket(bucketName string) {
-	err := m.MinioClient.MakeBucket(context.Background(), bucketName, minio.MakeBucketOptions{})
+	err := m.minioClient.MakeBucket(context.Background(), bucketName, minio.MakeBucketOptions{})
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -43,10 +42,24 @@ func (m *MinioClient) CreateBucket(bucketName string) {
 // UploadFile to upload the file into minio
 func (m *MinioClient) UploadFile(bucketName, filePath string) {
 	fileName := filepath.Base(filePath)
-	_, err := m.MinioClient.FPutObject(context.Background(), bucketName, fileName, filePath, minio.PutObjectOptions{})
+
+	if !fileExists(fileName) {
+		log.Fatalf(fmt.Sprintf("File %s does not exist", fileName))
+	}
+
+	_, err := m.minioClient.FPutObject(context.Background(), bucketName, fileName, filePath, minio.PutObjectOptions{})
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	fmt.Printf("Successfully uploaded %s to %s/%s\n", filePath, bucketName, fileName)
+}
+
+// fileExists checks if the specified file exists.
+func fileExists(filePath string) bool {
+	_, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return err == nil
 }
