@@ -42,24 +42,15 @@ func (m *MinioClient) CreateBucket(bucketName string) {
 // UploadFile to upload the file into minio
 func (m *MinioClient) UploadFile(bucketName, filePath string) {
 	fileName := filepath.Base(filePath)
-
-	if !fileExists(fileName) {
+	_, err := os.Stat(fileName)
+	if os.IsNotExist(err) {
 		log.Fatalf(fmt.Sprintf("File %s does not exist", fileName))
 	}
 
-	_, err := m.minioClient.FPutObject(context.Background(), bucketName, fileName, filePath, minio.PutObjectOptions{})
+	_, err = m.minioClient.FPutObject(context.Background(), bucketName, fileName, filePath, minio.PutObjectOptions{})
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	fmt.Printf("Successfully uploaded %s to %s/%s\n", filePath, bucketName, fileName)
-}
-
-// fileExists checks if the specified file exists.
-func fileExists(filePath string) bool {
-	_, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return err == nil
 }
