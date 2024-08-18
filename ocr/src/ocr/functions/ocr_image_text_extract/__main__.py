@@ -1,8 +1,8 @@
 import os
 import argparse
-from ..lib.minio_client import MinioClient
+from ..lib.clients.minio import MinioClient
 from ..lib.ocr.ocr_image import OCRUtil
-from ..lib.env_util import Environment
+from ..lib.utils.env_util import Environment
 
 
 def display_help():

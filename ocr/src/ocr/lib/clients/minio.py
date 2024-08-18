@@ -1,6 +1,6 @@
 from minio import Minio
 from minio.error import S3Error
-from env_util import Environment
+from .utils.env_util import Environment
 
 
 class MinioClient:
