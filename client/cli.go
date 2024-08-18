@@ -5,7 +5,6 @@ import (
 	"github.com/spf13/cobra"
 	"log"
 	"os"
-	"src/env"
 )
 
 var Env = Environment{
