@@ -1,13 +1,15 @@
 import os
 import argparse
-from yourcompany.minio_client import MinioClient
-from yourcompany.ocr_util import OCRUtil
-from yourcompany.env_util import Environment
+from lib.minio_client import MinioClient
+from lib.ocr_util import OCRUtil
+from lib.env_util import Environment
+
 
 def display_help():
     man_page_path = os.path.join(os.path.dirname(__file__), '../resources/ocr_cli_man.txt')
     with open(man_page_path, 'r') as man_file:
         print(man_file.read())
+
 
 def process_image(image_path):
     text = OCRUtil.extract_text(image_path)
@@ -15,6 +17,7 @@ def process_image(image_path):
     with open(temp_file_path, 'w') as temp_file:
         temp_file.write(text)
     return temp_file_path
+
 
 def upload_to_minio(image_path, minio_endpoint, minio_access_key, minio_secret_key, minio_bucket):
     minio_client = MinioClient(
@@ -27,6 +30,7 @@ def upload_to_minio(image_path, minio_endpoint, minio_access_key, minio_secret_k
     object_name = f"ocr/{os.path.basename(temp_file_path)}"
     minio_client.upload_file(temp_file_path, object_name)
     os.remove(temp_file_path)
+
 
 def main():
     # Check if --help flag is present

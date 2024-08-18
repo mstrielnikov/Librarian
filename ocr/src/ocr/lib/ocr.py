@@ -1,5 +1,6 @@
 from ocrolib.toplevel import ocropy
 
+
 class OCRUtil:
     @staticmethod
     def extract_text(image_path):
