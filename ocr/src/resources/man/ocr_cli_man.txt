@@ -1,0 +1,45 @@
+NAME
+    text_extractor_cli - OCR text extraction and upload to MinIO
+
+SYNOPSIS
+    text_extractor_cli
+    [--minio-endpoint ENDPOINT] [--minio-access-key ACCESS_KEY] [--minio-secret-key SECRET_KEY]
+    [--minio-bucket BUCKET] --image-path IMAGE_PATH
+
+DESCRIPTION
+    text_extractor_cli is a command-line utility that performs OCR (Optical Character Recognition) on an image
+    and uploads the extracted text to a MinIO bucket.
+
+    The utility accepts MinIO server credentials and the path to the image file as input arguments. If any
+    credentials are not provided as command-line arguments, the utility attempts to use environment variables
+    as default values.
+
+OPTIONS
+    --minio-endpoint ENDPOINT
+        Specifies the MinIO server endpoint. Defaults to the value of the environment variable MINIO_ENDPOINT
+        or http://localhost:9000 if the environment variable is not set.
+
+    --minio-access-key ACCESS_KEY
+        Specifies the MinIO access key. Defaults to the value of the environment variable MINIO_ACCESS_KEY or
+        minioadmin if the environment variable is not set.
+
+    --minio-secret-key SECRET_KEY
+        Specifies the MinIO secret key. Defaults to the value of the environment variable MINIO_SECRET_KEY or
+        minioadmin if the environment variable is not set.
+
+    --minio-bucket BUCKET
+        Specifies the MinIO bucket name where the extracted text will be uploaded. Defaults to the value of the
+        environment variable MINIO_BUCKET or ocr-results if the environment variable is not set.
+
+    --image-path IMAGE_PATH
+        Specifies the path to the image file for OCR processing. This argument is required.
+
+    --help
+        Displays this help message and exits.
+
+EXAMPLES
+    1. Extract text from an image and upload it to MinIO using default environment variables:
+        text_extractor_cli --image-path /path/to/image.png
+
+    2. Override MinIO server endpoint and bucket name:
+        text_extractor_cli --minio-endpoint http://new-minio-server:9000 --minio-bucket mybucket --image-path /path/to/image.png
