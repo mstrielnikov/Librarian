@@ -1,7 +1,7 @@
 import os
 import argparse
 from ..lib.minio_client import MinioClient
-from ..lib.ocr_util import OCRUtil
+from ..lib.ocr.ocr_image import OCRUtil
 from ..lib.env_util import Environment
 
 
