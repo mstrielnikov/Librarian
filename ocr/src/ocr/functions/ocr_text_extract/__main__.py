@@ -39,7 +39,12 @@ def main():
         return
 
     # Load environment variables as defaults
-    env = Environment(config_file_path="src/main/resources/config.yaml", check_env_var=True, nullable=False)
+    env = Environment(
+        config_file_path="src/main/resources/config.yaml",
+        check_env_var=True,
+        allow_config_file_nonexistence=True,
+        nullable=False
+    )
 
     # Argument parsing
     parser = argparse.ArgumentParser(description="OCR text extraction and upload to MinIO", add_help=False)

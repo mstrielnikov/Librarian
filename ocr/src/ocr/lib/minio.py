@@ -4,14 +4,7 @@ from env_util import Environment
 
 
 class MinioClient:
-    def __init__(self):
-        env = Environment(config_file_path="src/main/resources/config.yaml", check_env_var=True, nullable=False)
-
-        minio_endpoint = env.get_env('MINIO_ENDPOINT', 'http://localhost:9000').as_string()
-        access_key = env.get_env('MINIO_ACCESS_KEY', 'minioadmin').as_string()
-        secret_key = env.get_env('MINIO_SECRET_KEY', 'minioadmin').as_string()
-        bucket_name = env.get_env('MINIO_BUCKET', 'ocr-results').as_string()
-
+    def __init__(self, minio_endpoint: str, access_key: str, secret_key: str, bucket_name: str, secure: bool = False):
         self.client = Minio(
             minio_endpoint,
             access_key=access_key,
