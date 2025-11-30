@@ -1,9 +1,10 @@
 use eframe::egui;
 use graphodoc_core::{GraphData, Node, Edge};
-use std::collections::HashMap;
-use egui::{Color32, Pos2, Vec2, Rect, Stroke};
+use std::collections::{HashMap, HashSet};
+use egui::{Color32, Pos2, Vec2, Rect, Stroke, ScrollArea};
 use std::sync::{Arc, Mutex};
 
+// Shared state for the async fetcher
 struct SharedState {
     data: Option<GraphData>,
     error: Option<String>,
@@ -12,18 +13,25 @@ struct SharedState {
 
 pub struct App {
     state: Arc<Mutex<SharedState>>,
-    
-    nodes_map: HashMap<String, Node>,
-    edges: Vec<Edge>,
 
-    // Physics State (Keys are String)
+    // --- Data Source (Immutable after load) ---
+    all_nodes: HashMap<String, Node>,
+    all_edges: Vec<Edge>,
+    sorted_doc_names: Vec<(String, String)>, // (ID, Name) for the sidebar list
+
+    // --- Local Graph State (Dynamic) ---
+    selected_node_id: Option<String>,
+
+    // Physics State (Only for the visible local graph)
     positions: HashMap<String, Pos2>,
     velocities: HashMap<String, Vec2>,
-
     sim_running: bool,
+
+    // Viewport
     pan: Vec2,
     zoom: f32,
     dragging_node: Option<String>,
+    search_query: String, // For filtering the sidebar
 }
 
 impl App {
@@ -31,217 +39,335 @@ impl App {
         let state = Arc::new(Mutex::new(SharedState {
             data: None,
             error: None,
-            status_text: "Initializing...".to_owned(),
+            status_text: "Loading Graph...".to_owned(),
         }));
 
-        // Async Fetch
         let state_clone = state.clone();
         let request = ehttp::Request::get("/api/graph");
+
         ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
             let mut shared = state_clone.lock().unwrap();
-            if let Ok(response) = result {
-                shared.status_text = format!("HTTP {}", response.status);
-                if response.status == 200 {
-                    match serde_json::from_slice::<GraphData>(&response.bytes) {
-                        Ok(graph) => {
-                            shared.status_text = format!("Loaded {} nodes", graph.nodes.len());
-                            shared.data = Some(graph);
+            match result {
+                Ok(response) => {
+                    if response.status == 200 {
+                        match serde_json::from_slice::<GraphData>(&response.bytes) {
+                            Ok(graph) => {
+                                shared.status_text = format!("Ready.");
+                                shared.data = Some(graph);
+                            }
+                            Err(e) => shared.error = Some(format!("JSON Error: {}", e)),
                         }
-                        Err(e) => shared.error = Some(format!("JSON Error: {}", e)),
+                    } else {
+                        shared.error = Some(format!("Server Error: {}", response.status));
                     }
                 }
-            } else {
-                shared.error = Some("Network Error".to_string());
+                Err(e) => shared.error = Some(format!("Network Error: {}", e)),
             }
         });
 
         Self {
             state,
-            nodes_map: HashMap::new(),
-            edges: Vec::new(),
+            all_nodes: HashMap::new(),
+            all_edges: Vec::new(),
+            sorted_doc_names: Vec::new(),
+            selected_node_id: None,
             positions: HashMap::new(),
             velocities: HashMap::new(),
-            sim_running: true,
+            sim_running: false,
             pan: Vec2::ZERO,
             zoom: 1.0,
             dragging_node: None,
+            search_query: String::new(),
         }
     }
 
-    fn update_physics(&mut self, rect: Rect) {
-        if !self.sim_running || self.nodes_map.is_empty() { return; }
+    /// Resets the physics simulation specifically for the new local cluster
+    fn reset_simulation(&mut self, rect: Rect, visible_nodes: &HashSet<String>) {
+        self.positions.clear();
+        self.velocities.clear();
+        self.sim_running = true;
+        self.pan = Vec2::ZERO;
+        self.zoom = 1.0;
 
         let center = rect.center();
+        let mut i = 0.0f32;
 
-        // 0. Initialize positions (Spiral Layout)
-        if self.positions.is_empty() {
-            let mut i = 0.0f32;
-            for node in self.nodes_map.values() {
-                // Spread them out more initially (radius multiplier 15.0 -> 20.0)
-                let radius = 20.0 * (10.0 + i).sqrt();
-                let angle = i * 0.5;
-                self.positions.insert(node.id.clone(), center + Vec2::new(radius * angle.cos(), radius * angle.sin()));
-                self.velocities.insert(node.id.clone(), Vec2::ZERO);
-                i += 1.0;
+        // Place the selected node explicitly in the center
+        if let Some(root_id) = &self.selected_node_id {
+            if visible_nodes.contains(root_id) {
+                self.positions.insert(root_id.clone(), center);
+                self.velocities.insert(root_id.clone(), Vec2::ZERO);
             }
         }
 
-        let mut forces: HashMap<String, Vec2> = self.nodes_map.keys().map(|id| (id.clone(), Vec2::ZERO)).collect();
-        let node_ids: Vec<String> = self.nodes_map.keys().cloned().collect();
+        // Scatter neighbors around it
+        for node_id in visible_nodes {
+            if Some(node_id) == self.selected_node_id.as_ref() { continue; }
 
-        // 1. Repulsion (Nodes push apart)
-        for (i, id1) in node_ids.iter().enumerate() {
+            let radius = 100.0 + (i * 10.0);
+            let angle = i * 0.8;
+            let pos = center + Vec2::new(radius * angle.cos(), radius * angle.sin());
+
+            self.positions.insert(node_id.clone(), pos);
+            self.velocities.insert(node_id.clone(), Vec2::ZERO);
+            i += 1.0;
+        }
+    }
+
+    // FIX 2: Signature changed to accept &[Edge] (owned structs) instead of &[&Edge]
+    fn update_physics(&mut self, rect: Rect, visible_nodes: &HashSet<String>, visible_edges: &[Edge]) {
+        if !self.sim_running || visible_nodes.is_empty() { return; }
+
+        let center = rect.center();
+        let mut forces: HashMap<String, Vec2> = visible_nodes.iter().map(|id| (id.clone(), Vec2::ZERO)).collect();
+
+        // 1. Repulsion (Push apart)
+        let nodes_list: Vec<&String> = visible_nodes.iter().collect();
+        for (i, &id1) in nodes_list.iter().enumerate() {
             if let Some(&p1) = self.positions.get(id1) {
-                for id2 in node_ids.iter().skip(i + 1) {
+                for &id2 in nodes_list.iter().skip(i + 1) {
                     if let Some(&p2) = self.positions.get(id2) {
                         let diff = p1 - p2;
-                        // FIX: Clamp minimum distance to 10.0 to prevent division by zero/infinity
                         let dist_sq = diff.length_sq().max(100.0);
-
-                        // Optimization: Only calculate if close enough
-                        if dist_sq < 50_000.0 {
-                            // Lower repulsion strength (2000.0 -> 500.0)
-                            let force = diff.normalized() * (500.0 / dist_sq);
-                            if let Some(f) = forces.get_mut(id1) { *f += force; }
-                            if let Some(f) = forces.get_mut(id2) { *f -= force; }
-                        }
+                        // Stronger repulsion for local graph clarity
+                        let force = diff.normalized() * (3000.0 / dist_sq);
+                        if let Some(f) = forces.get_mut(id1) { *f += force; }
+                        if let Some(f) = forces.get_mut(id2) { *f -= force; }
                     }
                 }
             }
         }
 
-        // 2. Spring Force (Edges pull together)
-        for edge in &self.edges {
+        // 2. Springs (Pull connected)
+        for edge in visible_edges {
             if let (Some(&p1), Some(&p2)) = (self.positions.get(&edge.source), self.positions.get(&edge.target)) {
                 let delta = p2 - p1;
                 let dist = delta.length();
-                // Hooke's Law with max stretch limit
-                if dist > 0.1 {
-                    let force = delta.normalized() * (dist - 50.0) * 0.05;
+                // Tighter springs for local view
+                if dist > 1.0 {
+                    let force = delta.normalized() * (dist - 100.0) * 0.04;
                     if let Some(f) = forces.get_mut(&edge.source) { *f += force; }
                     if let Some(f) = forces.get_mut(&edge.target) { *f -= force; }
                 }
             }
         }
 
-        // 3. Center Gravity (Keep them on screen!)
+        // 3. Center Gravity
         for (id, pos) in &self.positions {
             let diff = center - *pos;
-            // Stronger centering force (0.015 -> 0.02)
-            if let Some(f) = forces.get_mut(id) { *f += diff * 0.02; }
+            let strength = if Some(id) == self.selected_node_id.as_ref() { 0.05 } else { 0.01 };
+            if let Some(f) = forces.get_mut(id) { *f += diff * strength; }
         }
 
-        // 4. Apply Physics with Clamping
+        // 4. Integration
         let mut total_ke = 0.0;
         for (id, force) in forces {
             if self.dragging_node.as_ref() == Some(&id) {
-                self.velocities.insert(id, Vec2::ZERO);
+                self.velocities.insert(id.clone(), Vec2::ZERO);
                 continue;
             }
 
             if let Some(vel) = self.velocities.get_mut(&id) {
-                // FIX: Velocity Clamping! Max speed 5.0 pixels/frame
                 let mut new_vel = *vel + force;
-                if new_vel.length() > 5.0 {
-                    new_vel = new_vel.normalized() * 5.0;
-                }
+                // Clamp max speed
+                if new_vel.length() > 10.0 { new_vel = new_vel.normalized() * 10.0; }
+                *vel = new_vel * 0.65; // High friction
 
-                // Higher Friction (0.85 -> 0.60) to stop them from drifting forever
-                *vel = new_vel * 0.60;
-
-                if let Some(pos) = self.positions.get_mut(&id) {
-                    *pos += *vel;
-                }
+                if let Some(pos) = self.positions.get_mut(&id) { *pos += *vel; }
                 total_ke += vel.length_sq();
             }
         }
 
-        // Auto-pause when movement is negligible
         if total_ke < 0.1 { self.sim_running = false; }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint();
-
-        // Sync State
-        let (status_text, error_opt) = {
+        // Sync Data
+        {
             let mut shared = self.state.lock().unwrap();
             if let Some(data) = shared.data.take() {
-                self.nodes_map = data.nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
-                self.edges = data.edges;
-                self.sim_running = true;
-            }
-            (shared.status_text.clone(), shared.error.clone())
-        };
+                self.all_nodes = data.nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+                self.all_edges = data.edges;
 
+                // Prepare sorted list for sidebar
+                self.sorted_doc_names = self.all_nodes.values()
+                    .filter(|n| n.kind == "Document")
+                    .map(|n| (n.id.clone(), n.name.clone()))
+                    .collect();
+                self.sorted_doc_names.sort_by(|a, b| a.1.cmp(&b.1));
+            }
+        }
+
+        // --- SIDEBAR (Left Menu) ---
+        egui::SidePanel::left("sidebar_panel").resizable(true).default_width(250.0).show(ctx, |ui| {
+            ui.heading("📚 Documents");
+            ui.separator();
+
+            ui.add(egui::TextEdit::singleline(&mut self.search_query).hint_text("Search..."));
+            ui.separator();
+
+            ScrollArea::vertical().show(ui, |ui| {
+                let query = self.search_query.to_lowercase();
+                for (id, name) in &self.sorted_doc_names {
+                    if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                        continue;
+                    }
+
+                    let is_selected = self.selected_node_id.as_ref() == Some(id);
+                    if ui.selectable_label(is_selected, name).clicked() {
+                        self.selected_node_id = Some(id.clone());
+                        // Trigger physics reset on new selection
+                        self.sim_running = false;
+                    }
+                }
+            });
+        });
+
+        // --- MAIN CANVAS (Graph) ---
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.max_rect();
             let painter = ui.painter().with_clip_rect(rect);
 
+            // 1. Calculate Local Graph (Filter)
+            let mut visible_nodes = HashSet::new();
+            // FIX 1: Change to Vec<Edge> to hold owned data, not references
+            let mut visible_edges: Vec<Edge> = Vec::new();
+
+            if let Some(root_id) = &self.selected_node_id {
+                visible_nodes.insert(root_id.clone());
+
+                // Find connected edges
+                for edge in &self.all_edges {
+                    if &edge.source == root_id {
+                        visible_edges.push(edge.clone()); // CLONE HERE
+                        visible_nodes.insert(edge.target.clone());
+                    } else if &edge.target == root_id {
+                        visible_edges.push(edge.clone()); // CLONE HERE
+                        visible_nodes.insert(edge.source.clone());
+                    }
+                }
+            }
+
+            // 2. Initialize Physics if needed (Reset when selection changes)
+            let need_reset = self.selected_node_id.is_some() && (
+                self.positions.is_empty() ||
+                    !self.positions.contains_key(self.selected_node_id.as_ref().unwrap()) ||
+                    !self.sim_running // Re-trigger via click flag
+            );
+
+            if need_reset && !visible_nodes.is_empty() {
+                self.reset_simulation(rect, &visible_nodes);
+            }
+
+            // 3. Input Handling
             if ui.rect_contains_pointer(rect) {
+                // Zoom
                 let scroll = ui.input(|i| i.raw_scroll_delta.y);
                 if scroll != 0.0 {
                     let old_zoom = self.zoom;
                     self.zoom *= if scroll > 0.0 { 1.1 } else { 0.9 };
-                    self.zoom = self.zoom.clamp(0.1, 5.0);
+                    self.zoom = self.zoom.clamp(0.2, 3.0);
+                    if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
+                        let offset = ptr - rect.center() - self.pan;
+                        let ratio = self.zoom / old_zoom;
+                        self.pan -= offset * (ratio - 1.0);
+                    }
+                }
+                // Pan
+                if ui.input(|i| i.pointer.middle_down()) {
+                    self.pan += ui.input(|i| i.pointer.delta());
                 }
             }
 
-            self.update_physics(rect);
+            // 4. Physics Step
+            if self.sim_running {
+                // Now we pass the owned vector, no lifetime issues with 'self'
+                self.update_physics(rect, &visible_nodes, &visible_edges);
+                ctx.request_repaint(); // Animation loop
+            }
 
+            // 5. Render
             let to_screen = |pos: Pos2| -> Pos2 {
                 rect.center() + (pos - rect.center()) * self.zoom + self.pan
             };
 
             // Draw Edges
-            for edge in &self.edges {
+            for edge in &visible_edges {
                 if let (Some(&p1), Some(&p2)) = (self.positions.get(&edge.source), self.positions.get(&edge.target)) {
-                    painter.line_segment([to_screen(p1), to_screen(p2)], Stroke::new(1.0, Color32::from_gray(60)));
+                    let s1 = to_screen(p1);
+                    let s2 = to_screen(p2);
+                    painter.line_segment([s1, s2], Stroke::new(1.5 * self.zoom, Color32::from_gray(80)));
                 }
             }
 
             // Draw Nodes
-            for node in self.nodes_map.values() {
-                if let Some(pos) = self.positions.get(&node.id) {
-                    let screen_pos = to_screen(*pos);
-                    let interact_rect = Rect::from_center_size(screen_pos, Vec2::splat(10.0));
+            for node_id in &visible_nodes {
+                if let Some(node) = self.all_nodes.get(node_id) {
+                    if let Some(&pos) = self.positions.get(node_id) {
+                        let screen_pos = to_screen(pos);
+                        let radius = 6.0 * self.zoom;
 
-                    if ui.input(|i| i.pointer.primary_down()) {
-                        if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
-                            if interact_rect.contains(ptr) && self.dragging_node.is_none() {
-                                self.dragging_node = Some(node.id.clone());
-                                self.sim_running = true;
+                        // Dragging
+                        let interact_rect = Rect::from_center_size(screen_pos, Vec2::splat(radius * 2.5));
+                        if ui.input(|i| i.pointer.primary_down()) {
+                            if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
+                                if interact_rect.contains(ptr) && self.dragging_node.is_none() {
+                                    self.dragging_node = Some(node_id.clone());
+                                    self.sim_running = true;
+                                }
                             }
                         }
-                    }
-                    if ui.input(|i| i.pointer.primary_released()) { self.dragging_node = None; }
+                        if ui.input(|i| i.pointer.primary_released()) { self.dragging_node = None; }
 
-                    if self.dragging_node.as_ref() == Some(&node.id) {
-                        if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
-                            let sim_pos = rect.center() + (ptr - rect.center() - self.pan) / self.zoom;
-                            self.positions.insert(node.id.clone(), sim_pos);
+                        if self.dragging_node.as_ref() == Some(node_id) {
+                            if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
+                                let sim_pos = rect.center() + (ptr - rect.center() - self.pan) / self.zoom;
+                                self.positions.insert(node_id.clone(), sim_pos);
+                            }
                         }
-                    }
 
-                    if rect.contains(screen_pos) {
+                        // Colors
                         let color = match node.kind.as_str() {
-                            "Document" => Color32::from_rgb(100, 149, 237),
-                            "Concept" => Color32::from_rgb(144, 238, 144),
-                            "Tag" => Color32::from_rgb(255, 165, 0),
+                            "Document" => Color32::from_rgb(100, 149, 237), // Blue
+                            "Concept" => Color32::from_rgb(144, 238, 144), // Green
+                            "Tag" => Color32::from_rgb(255, 165, 0),       // Orange
+                            "Keyword" => Color32::from_rgb(200, 200, 200), // Gray
                             _ => Color32::GRAY,
                         };
-                        painter.circle_filled(screen_pos, 5.0 * self.zoom, color);
+
+                        // Highlight Center Node
+                        let final_color = if Some(node_id) == self.selected_node_id.as_ref() {
+                            Color32::WHITE
+                        } else {
+                            color
+                        };
+
+                        painter.circle_filled(screen_pos, radius, final_color);
+
+                        // Text Labels (Always show name for local graph nodes)
+                        painter.text(
+                            screen_pos + Vec2::new(0.0, radius + 4.0),
+                            egui::Align2::CENTER_TOP,
+                            &node.name,
+                            egui::FontId::proportional(12.0 * self.zoom),
+                            Color32::WHITE,
+                        );
                     }
                 }
             }
 
-            // Overlay
-            egui::Area::new("ui_overlay".into()).fixed_pos(rect.min + Vec2::new(10.0, 10.0)).show(ctx, |ui| {
-                ui.label(&status_text);
-                if let Some(e) = error_opt { ui.colored_label(Color32::RED, e); }
-            });
+            // Empty State
+            if self.selected_node_id.is_none() {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Select a document from the sidebar to view its connections.",
+                    egui::FontId::proportional(20.0),
+                    Color32::GRAY,
+                );
+            }
         });
     }
 }
