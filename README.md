@@ -12,6 +12,11 @@ Technology
 
 Role
 
+Dependencies:
+- `trunk`
+- `protoc`
+- `lanceDB`
+
 Language
 
 Rust
