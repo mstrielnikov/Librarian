@@ -1,92 +1,176 @@
-📄 GraphoDoc: Markdown Knowledge Base Indexer (MVP)
+# GraphoDoc: Markdown Knowledge Base with Graph + Vector Search
 
-🎯 Core Goal
+Transforms a directory of Markdown documents into a searchable knowledge graph with hybrid (graph + text) search capabilities, optimized for Agentic RAG applications.
 
-To transform a directory of Markdown documents (a "Doc Base") into a structured, searchable knowledge graph. This provides a clear, indexable view of document relationships, keywords, and concepts, laying the foundation for future LLM-based RAG (Retrieval-Augmented Generation) and chat applications.
+## Core Goal
 
-🛠️ Technology Stack
+Build a knowledge graph from Markdown documents with:
+- **Graph-based relationships** (wiki-links, tags, keywords)
+- **TF-IDF keyword analysis** for relevance scoring
+- **Vector-ready storage** (LanceDB) for semantic search
+- **REST API** for agentic RAG integration
 
-Component
+## Technology Stack
 
-Technology
+| Component | Technology | Role |
+|-----------|------------|------|
+| Language | Rust | High-performance indexing and processing |
+| Database | LanceDB | Vector-ready, embedded DB for persistence and search |
+| Markdown | pulldown-cmark | Parse Markdown to plain text |
+| NLP | stop-words, rust-stemmers | Text preprocessing + TF-IDF keyword analysis |
+| Web | axum + egui (WASM) | REST API + Web UI |
 
-Role
+### Prerequisites
+- `trunk` - WASM build tool
+- `protoc` - Protocol buffer compiler
+- Rust toolchain
 
-Dependencies:
-- `trunk`
-- `protoc`
-- `lanceDB`
+## Quick Start
 
-Language
+```bash
+# Build
+cargo build --release
 
-Rust
+# Index a markdown directory
+cargo run --release -- --dir ./docs --rebuild
 
-High-performance, memory-safe indexing and processing.
+# Run web server (port 3000)
+cargo run --release -- --serve --port 3000
+```
 
-Database
+## Data Model
 
-lancedb (via Rust API)
+### Hierarchical Node IDs
 
-Vector-ready, embedded database for persistence and efficient search (future vector embedding search).
+The system uses a hierarchical ID scheme for better indexing and graph traversal:
 
-Parsing
+- **Documents**: Sequential `U32` (0, 1, 2, ...)
+- **Concepts**: `U64` = `(doc_id << 32) | concept_index` - encodes parent document
+- **Tags/Keywords**: Hash-based with kind prefix (deduplicated globally)
 
-pulldown-cmark
+```rust
+enum NodeId {
+    U32(u32),           // Documents (up to ~4B)
+    U64(u64),           // Concepts from U32 docs
+    U128(u128),         // Deep concepts
+    Chunked(Vec<u32>),  // Very deep hierarchies
+}
+```
 
-Converts Markdown content into events for structured data extraction.
+### Tables (LanceDB)
 
-NLP/Keywords
+**documents** - Source content with embeddings
+- `id` - Sequential document index (U32)
+- `path`, `title` - File metadata
+- `content` - Raw Markdown
+- `text` - Plain text
+- `wiki_links`, `tags` - Extracted relationships
+- `keywords` - Stemmed tokens
+- `embedding` - Vector (for future semantic search)
 
-stop-words, rust-stemmers
+**nodes** - Graph entities
+- `id` - Hierarchical NodeId (see above)
+- `name` - Entity name
+- `kind` - Document, Concept, Tag, Keyword
+- `doc_id` - Source document (for concepts)
+- `vector` - Entity embedding
 
-Pre-processing text for generating normalized keywords.
+**edges** - Relationships
+- `source`, `target` - NodeId references
+- `kind` - LinksTo, HasTag, HasKeyword
 
-📊 Data Model & Graph Structure
+## Processing Pipeline
 
-The data is stored across three main tables in LanceDB, representing a basic property graph model:
+1. **Scan** - Recursively find `.md` files
+2. **Parse** - Extract wiki-links `[[Target]]`, `#tags`
+3. **Extract Text** - Convert Markdown to plain text
+4. **Keyword Extraction** - Tokenize → stop-word filter → stem → TF-IDF scoring
+5. **Build Graph** - Create nodes/edges from links, tags, keywords
+6. **Persist** - Save to LanceDB
 
-documents (Nodes)
+## TF-IDF Keyword Analysis
 
-Fields: id (XXH3 hash of file path), path, title, content (full MD), text (plain text), wiki_links (array), tags (array), keywords (array of stemmed tokens).
+Keywords are scored using TF-IDF:
+- **TF**: Term frequency within document
+- **IDF**: `ln(N/df) + 1` (inverse document frequency)
+- Keywords with score > 0.5 are included in the graph
 
-nodes (Concepts/Entities)
+## API Endpoints
 
-Represents every unique entity: Documents, Wiki Links (Concepts), Tags, and Keywords.
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/graph` | GET | Full graph (nodes + edges) |
+| `/api/doc/:id` | GET | Document content |
+| `/api/search?q=<query>&limit=<n>` | GET | Full-text search |
+| `/api/connected/:node_id` | GET | Direct neighbors |
+| `/api/traverse` | POST | Multi-hop traversal |
 
-Fields: id (XXH3 hash of name), name (e.g., "Architecture", "Rust", "Project-A"), kind (Document, Concept, Tag, Keyword), doc_id (Link to the source document if kind is Document).
+### Search API
 
-edges (Relationships)
+```bash
+# Search documents
+curl "http://localhost:3000/api/search?q=rust&limit=5"
 
-Defines connections between the nodes.
+# Get connected nodes
+curl "http://localhost:3000/api/connected/abc123"
 
-Fields: source (u64 Node ID), target (u64 Node ID), kind (LinksTo, HasTag, HasKeyword).
+# Multi-hop traversal
+curl -X POST http://localhost:3000/api/traverse \
+  -H "Content-Type: application/json" \
+  -d '{"node_id": "abc123", "hops": 2}'
+```
 
-⚙️ Processing Pipeline (Indexer)
+## Agentic RAG Integration
 
-Scanning: Recursively traverse a user-specified directory, filtering for .md files.
+The graph structure supports hybrid search:
 
-Parsing: For each file:
+1. **Text Search** - `/api/search` for keyword matching
+2. **Graph Traversal** - `/api/traverse` for related documents
+3. **Connected Context** - `/api/connected/:node_id` for immediate neighbors
 
-Read content.
+Future enhancements:
+- Add embeddings to `embedding` field for vector similarity
+- Use LanceDB's native vector search
+- Implement re-ranking with graph structure
 
-Extract the title from the filename.
+## Project Structure
 
-Extract wiki_links ([[Target]]) and #tags using Regular Expressions.
+```
+graphodoc/
+├── Cargo.toml           # Workspace config
+├── crates/
+│   ├── core/           # Data structures (Node, Edge, Doc)
+│   │   └── src/
+│   │       ├── lib.rs  # Core types
+│   │       └── graph.rs # Graph building + TF-IDF
+│   ├── cli/            # Indexer + Server
+│   │   └── src/
+│   │       ├── main.rs  # CLI entry
+│   │       ├── indexer.rs # Document processing
+│   │       └── server.rs  # REST API
+│   └── web/            # WASM frontend (egui)
+│       └── src/
+│           └── lib.rs  # Graph visualization
+└── mdkb_data/          # LanceDB storage (created on first run)
+```
 
-Convert Markdown to plain text using pulldown-cmark.
+## Usage Examples
 
-Keyword Extraction:
+```bash
+# Index documents with rebuild
+cargo run -- --dir ./math --rebuild
 
-Tokenize the plain text.
+# Start server on custom port
+cargo run -- --serve --port 8080
 
-Filter out English stop-words (e.g., "the", "a", "is").
+# Index + serve in one command
+cargo run -- --dir ./docs --serve
+```
 
-Apply English stemming (e.g., "running" -> "run").
+## Documentation
 
-Store unique resulting tokens as keywords.
+See the `doc/` directory for detailed documentation:
 
-Indexing:
-
-Persist the processed document data into the documents table.
-
-Iterate over all documents, generating and connecting nodes in the nodes and edges tables based on extracted links, tags, and stemmed keywords.
+- **[architecture.md](doc/architecture.md)** - High-level system design and components
+- **[knowledge_graph.md](doc/knowledge_graph.md)** - Graph storage, hierarchical addressing, vector embeddings
+- **[graph_search.md](doc/graph_search.md)** - TF-IDF algorithm, keyword extraction, search APIs

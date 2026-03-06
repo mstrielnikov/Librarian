@@ -1,5 +1,5 @@
 use eframe::egui;
-use graphodoc_core::{GraphData, Node, Edge};
+use graphodoc_core::{GraphData, Node, Edge, NodeId, NodeKind};
 use std::collections::{HashMap, HashSet};
 use egui::{Color32, Pos2, Vec2, Rect, Stroke, ScrollArea};
 use std::sync::{Arc, Mutex};
@@ -15,22 +15,22 @@ pub struct App {
     state: Arc<Mutex<SharedState>>,
 
     // --- Data Source (Immutable after load) ---
-    all_nodes: HashMap<String, Node>,
+    all_nodes: HashMap<NodeId, Node>,
     all_edges: Vec<Edge>,
-    sorted_doc_names: Vec<(String, String)>, // (ID, Name) for the sidebar list
+    sorted_doc_names: Vec<(NodeId, String)>, // (ID, Name) for the sidebar list
 
     // --- Local Graph State (Dynamic) ---
-    selected_node_id: Option<String>,
+    selected_node_id: Option<NodeId>,
 
     // Physics State (Only for the visible local graph)
-    positions: HashMap<String, Pos2>,
-    velocities: HashMap<String, Vec2>,
+    positions: HashMap<NodeId, Pos2>,
+    velocities: HashMap<NodeId, Vec2>,
     sim_running: bool,
 
     // Viewport
     pan: Vec2,
     zoom: f32,
-    dragging_node: Option<String>,
+    dragging_node: Option<NodeId>,
     search_query: String, // For filtering the sidebar
 }
 
@@ -82,7 +82,7 @@ impl App {
     }
 
     /// Resets the physics simulation specifically for the new local cluster
-    fn reset_simulation(&mut self, rect: Rect, visible_nodes: &HashSet<String>) {
+    fn reset_simulation(&mut self, rect: Rect, visible_nodes: &HashSet<NodeId>) {
         self.positions.clear();
         self.velocities.clear();
         self.sim_running = true;
@@ -115,14 +115,14 @@ impl App {
     }
 
     // FIX 2: Signature changed to accept &[Edge] (owned structs) instead of &[&Edge]
-    fn update_physics(&mut self, rect: Rect, visible_nodes: &HashSet<String>, visible_edges: &[Edge]) {
+    fn update_physics(&mut self, rect: Rect, visible_nodes: &HashSet<NodeId>, visible_edges: &[Edge]) {
         if !self.sim_running || visible_nodes.is_empty() { return; }
 
         let center = rect.center();
-        let mut forces: HashMap<String, Vec2> = visible_nodes.iter().map(|id| (id.clone(), Vec2::ZERO)).collect();
+        let mut forces: HashMap<NodeId, Vec2> = visible_nodes.iter().map(|id| (id.clone(), Vec2::ZERO)).collect();
 
         // 1. Repulsion (Push apart)
-        let nodes_list: Vec<&String> = visible_nodes.iter().collect();
+        let nodes_list: Vec<&NodeId> = visible_nodes.iter().collect();
         for (i, &id1) in nodes_list.iter().enumerate() {
             if let Some(&p1) = self.positions.get(id1) {
                 for &id2 in nodes_list.iter().skip(i + 1) {
@@ -193,7 +193,7 @@ impl eframe::App for App {
 
                 // Prepare sorted list for sidebar
                 self.sorted_doc_names = self.all_nodes.values()
-                    .filter(|n| n.kind == "Document")
+                    .filter(|n| n.kind == NodeKind::Document)
                     .map(|n| (n.id.clone(), n.name.clone()))
                     .collect();
                 self.sorted_doc_names.sort_by(|a, b| a.1.cmp(&b.1));
@@ -329,12 +329,11 @@ impl eframe::App for App {
                         }
 
                         // Colors
-                        let color = match node.kind.as_str() {
-                            "Document" => Color32::from_rgb(100, 149, 237), // Blue
-                            "Concept" => Color32::from_rgb(144, 238, 144), // Green
-                            "Tag" => Color32::from_rgb(255, 165, 0),       // Orange
-                            "Keyword" => Color32::from_rgb(200, 200, 200), // Gray
-                            _ => Color32::GRAY,
+                        let color = match node.kind {
+                            NodeKind::Document => Color32::from_rgb(100, 149, 237), // Blue
+                            NodeKind::Concept => Color32::from_rgb(144, 238, 144), // Green
+                            NodeKind::Tag => Color32::from_rgb(255, 165, 0),       // Orange
+                            NodeKind::Keyword => Color32::from_rgb(200, 200, 200), // Gray
                         };
 
                         // Highlight Center Node

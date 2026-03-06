@@ -1,14 +1,24 @@
 use anyhow::{Context, Result};
-use arrow_array::{RecordBatch, RecordBatchIterator};
+use arrow_array::RecordBatchIterator;
 use arrow_json::reader::infer_json_schema;
-use graphodoc_core::{Doc, graph};
+use graphodoc_core::{Doc, graph, NodeId};
 use lancedb::connection::Connection;
 use pulldown_cmark::{Parser, Event};
 use regex::Regex;
+use rust_stemmers::{Algorithm, Stemmer};
+use stop_words::{LANGUAGE, get};
 use std::{fs, path::Path, sync::Arc, io::{Cursor, Seek, SeekFrom}};
 use walkdir::WalkDir;
-use xxhash_rust::xxh3::xxh3_64;
 use crate::Cli;
+
+lazy_static::lazy_static! {
+    static ref STOP_WORDS: std::collections::HashSet<String> = get(LANGUAGE::English)
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    
+    static ref STEMMER: Stemmer = Stemmer::create(Algorithm::English);
+}
 
 pub async fn run_indexer(cli: &Cli) -> Result<()> {
     println!("🔍 Scanning directory: {:?}", cli.dir);
@@ -27,9 +37,21 @@ pub async fn run_indexer(cli: &Cli) -> Result<()> {
     let db = lancedb::connect(cli.db.to_str().unwrap_or("./mdkb_data"))
         .execute().await?;
 
-    save_table(&db, "documents", &docs, cli.rebuild).await?;
-    save_table(&db, "nodes", &graph_data.nodes, cli.rebuild).await?;
-    save_table(&db, "edges", &graph_data.edges, cli.rebuild).await?;
+    if cli.rebuild {
+        if db.table_names().execute().await?.contains(&"documents".to_string()) {
+            db.drop_table("documents", &Vec::new()).await?;
+        }
+        if db.table_names().execute().await?.contains(&"nodes".to_string()) {
+            db.drop_table("nodes", &Vec::new()).await?;
+        }
+        if db.table_names().execute().await?.contains(&"edges".to_string()) {
+            db.drop_table("edges", &Vec::new()).await?;
+        }
+    }
+
+    save_table(&db, "documents", &docs, false).await?;
+    save_table(&db, "nodes", &graph_data.nodes, false).await?;
+    save_table(&db, "edges", &graph_data.edges, false).await?;
 
     println!("🚀 Indexing complete!");
     Ok(())
@@ -40,7 +62,7 @@ fn scan_docs(root: &Path) -> Result<Vec<Doc>> {
     let wiki_link_re = Regex::new(r"\[\[(.*?)\]\]").unwrap();
     let tag_re = Regex::new(r"#(\w+)").unwrap();
 
-    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+    for (idx, entry) in WalkDir::new(root).into_iter().filter_map(|e| e.ok()).enumerate() {
         if entry.path().extension().and_then(|s| s.to_str()) == Some("md") {
             let content = fs::read_to_string(entry.path())
                 .with_context(|| format!("Failed to read {:?}", entry.path()))?;
@@ -48,15 +70,13 @@ fn scan_docs(root: &Path) -> Result<Vec<Doc>> {
             let rel_path = entry.path().strip_prefix(root).unwrap_or(entry.path());
             let title = entry.path().file_stem().unwrap().to_string_lossy().to_string();
 
-            // FIX: Generate Hex String ID
-            let hash = xxh3_64(rel_path.to_string_lossy().as_bytes());
-            let id = format!("{:016x}", hash);
+            let id = NodeId::new_document(idx as u32);
 
             let (text, keywords) = extract_text_and_keywords(&content);
             let wiki_links: Vec<String> = wiki_link_re.captures_iter(&content).map(|c| c[1].to_string()).collect();
             let tags: Vec<String> = tag_re.captures_iter(&content).map(|c| c[1].to_string()).collect();
 
-            docs.push(Doc { id, path: rel_path.to_string_lossy().to_string(), title, content, text, wiki_links, tags, keywords });
+            docs.push(Doc { id, path: rel_path.to_string_lossy().to_string(), title, content, text, wiki_links, tags, keywords, embedding: None });
         }
     }
     Ok(docs)
@@ -75,10 +95,16 @@ fn extract_text_and_keywords(md_content: &str) -> (String, Vec<String>) {
             _ => {}
         }
     }
+    
     let keywords: Vec<String> = text_acc.split_whitespace()
         .map(|s| s.to_lowercase())
-        .filter(|s| s.len() > 3 && s.chars().all(char::is_alphanumeric))
-        .collect::<std::collections::HashSet<_>>().into_iter().collect();
+        .filter(|s| s.len() > 2 && s.chars().all(char::is_alphanumeric))
+        .filter(|s| !STOP_WORDS.contains(s.as_str()))
+        .map(|s| STEMMER.stem(&s).to_string())
+        .filter(|s| s.len() > 2)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
     (text_acc, keywords)
 }
 
